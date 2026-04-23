@@ -1,0 +1,19 @@
+.venv/
+__pycache__/
+*.pyc
+
+# Data & model artifacts
+data/
+dataset/
+checkpoints/
+results/
+lasso_data/
+lasso_dataset/
+lasso_checkpoints/
+lasso_results/
+*.pt
+*.pth
+
+# Jupyter notebook artifacts
+.ipynb_checkpoints/
+*.nbconvert.*
