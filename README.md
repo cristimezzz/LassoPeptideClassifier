@@ -18,7 +18,7 @@ FASTA 序列 → ESM-2 (t12_35M, 冻结) → 1D Conv × 3 → Multi-Head Attenti
 ### 1. 环境配置
 
 ```bash
-git clone <your-repo-url>
+git clone https://github.com/cristimezzz/LassoPeptideClassifier.git
 cd Lasso
 python3 -m venv .venv
 source .venv/bin/activate
