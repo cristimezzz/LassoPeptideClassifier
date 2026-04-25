@@ -6,18 +6,25 @@ from Bio import SeqIO
 from config import (
     CHECKPOINT_DIR,
     ESM_MODEL_NAME,
-    MAX_LEN,
     ESM_BATCH_SIZE,
     PRED_BATCH_SIZE,
+    MAX_LEN,
     get_esm_embed_dim,
+    get_model_info,
     ensure_dirs,
 )
 from utils import load_esm_model, extract_esm2_embeddings, load_classifier_from_checkpoint
 
 
-def predict_fasta(input_fasta, output_csv, checkpoint=None):
+def predict_fasta(input_fasta, output_csv, checkpoint=None, esm_model_name=None):
     ensure_dirs()
-    embed_dim = get_esm_embed_dim(ESM_MODEL_NAME)
+    if esm_model_name is None:
+        esm_model_name = ESM_MODEL_NAME
+
+    info = get_model_info(esm_model_name)
+    embed_dim = get_esm_embed_dim(esm_model_name)
+    batch_size = info["batch"]
+    print(f"[*] ESM-2: {info['label']} | embed_dim={embed_dim}")
 
     print(f"[*] Reading sequences from {input_fasta}")
     records = list(SeqIO.parse(input_fasta, "fasta"))
@@ -28,9 +35,9 @@ def predict_fasta(input_fasta, output_csv, checkpoint=None):
     seq_ids = [r.id for r in records]
     print(f"[*] Found {len(records)} sequences, extracting ESM-2 embeddings...")
 
-    esm_model, tokenizer, device = load_esm_model(ESM_MODEL_NAME)
+    esm_model, tokenizer, device = load_esm_model(esm_model_name)
     _, embeddings = extract_esm2_embeddings(
-        input_fasta, ESM_MODEL_NAME, esm_model, tokenizer, device, ESM_BATCH_SIZE, MAX_LEN
+        input_fasta, esm_model_name, esm_model, tokenizer, device, batch_size, MAX_LEN
     )
 
     ckpt_path = checkpoint or CHECKPOINT_DIR + "/best_model.pt"
@@ -61,8 +68,9 @@ def main():
     parser.add_argument("-i", "--input", required=True, help="Input FASTA file")
     parser.add_argument("-o", "--output", default="predictions.csv", help="Output CSV file")
     parser.add_argument("-c", "--checkpoint", default=None, help="Model checkpoint path")
+    parser.add_argument("--esm-model", default=None, help="ESM-2 model name")
     args = parser.parse_args()
-    predict_fasta(args.input, args.output, args.checkpoint)
+    predict_fasta(args.input, args.output, args.checkpoint, args.esm_model)
 
 
 if __name__ == "__main__":

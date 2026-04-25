@@ -1,3 +1,4 @@
+import argparse
 import os
 import torch
 import numpy as np
@@ -18,6 +19,7 @@ from config import (
     MLP_HIDDEN,
     DROPOUT,
     get_esm_embed_dim,
+    get_model_info,
     ensure_dirs,
 )
 from utils import LassoDataset, evaluate_model, print_metrics, load_classifier_from_checkpoint
@@ -94,16 +96,20 @@ def collect_predictions(model, loader, device):
             torch.cat(all_prob).numpy().ravel())
 
 
-def main():
+def main(esm_model=None, checkpoint_name="best_model.pt", save_plots=True):
     ensure_dirs()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    embed_dim = get_esm_embed_dim(ESM_MODEL_NAME)
-    print(f"[*] Device: {device}")
+
+    if esm_model is None:
+        esm_model = ESM_MODEL_NAME
+    embed_dim = get_esm_embed_dim(esm_model)
+    info = get_model_info(esm_model)
+    print(f"[*] Device: {device}  |  ESM: {info['label']}  |  dim={embed_dim}")
 
     test_set = LassoDataset(os.path.join(DATASET_DIR, "test.pt"))
     test_loader = DataLoader(test_set, batch_size=BATCH_SIZE, shuffle=False)
 
-    ckpt_path = os.path.join(CHECKPOINT_DIR, "best_model.pt")
+    ckpt_path = os.path.join(CHECKPOINT_DIR, checkpoint_name)
     model = load_classifier_from_checkpoint(ckpt_path, embed_dim, device)
     print(f"[*] Loaded checkpoint: {ckpt_path}")
 
@@ -122,19 +128,25 @@ def main():
     print("=" * 60)
     print(report_text)
 
-    report_path = os.path.join(RESULTS_DIR, "classification_report.txt")
-    with open(report_path, "w") as f:
-        f.write("Classification Report\n")
-        f.write("=" * 60 + "\n")
-        f.write(report_text)
+    if save_plots:
+        report_path = os.path.join(RESULTS_DIR, "classification_report.txt")
+        with open(report_path, "w") as f:
+            f.write("Classification Report\n")
+            f.write("=" * 60 + "\n")
+            f.write(report_text)
 
-    plot_confusion_matrix(y_true, y_pred, os.path.join(RESULTS_DIR, "confusion_matrix.png"))
-    plot_roc_curve(y_true, y_prob, os.path.join(RESULTS_DIR, "roc_curve.png"))
-    plot_pr_curve(y_true, y_prob, os.path.join(RESULTS_DIR, "pr_curve.png"))
-    plot_probability_distribution(y_true, y_prob, os.path.join(RESULTS_DIR, "probability_distribution.png"))
+        plot_confusion_matrix(y_true, y_pred, os.path.join(RESULTS_DIR, "confusion_matrix.png"))
+        plot_roc_curve(y_true, y_prob, os.path.join(RESULTS_DIR, "roc_curve.png"))
+        plot_pr_curve(y_true, y_prob, os.path.join(RESULTS_DIR, "pr_curve.png"))
+        plot_probability_distribution(y_true, y_prob, os.path.join(RESULTS_DIR, "probability_distribution.png"))
+        print(f"\n[+] All results saved → {RESULTS_DIR}/")
 
-    print(f"\n[+] All results saved → {RESULTS_DIR}/")
+    return test_metrics
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--esm-model", default=None, help="ESM-2 model name")
+    parser.add_argument("--checkpoint", default="best_model.pt", help="Checkpoint filename")
+    args = parser.parse_args()
+    main(esm_model=args.esm_model, checkpoint_name=args.checkpoint)
