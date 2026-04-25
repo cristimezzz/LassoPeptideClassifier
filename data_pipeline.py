@@ -1,9 +1,8 @@
 import os
 import torch
 import subprocess
-from Bio import SeqIO
-from transformers import EsmTokenizer, EsmModel
 from sklearn.model_selection import train_test_split
+
 from config import (
     CLEAN_POS,
     CLEAN_NEG,
@@ -13,104 +12,95 @@ from config import (
     ESM_BATCH_SIZE,
     CD_HIT_THRESHOLD,
     RANDOM_SEED,
-    TRAIN_RATIO,
-    VAL_RATIO,
-    TEST_RATIO,
+    get_esm_embed_dim,
+    ensure_dirs,
 )
+from utils import extract_esm2_embeddings, load_esm_model
 
 
 def run_cd_hit(input_fasta, output_fasta, threshold=0.5):
     print(f"[*] Running CD-HIT (threshold={threshold})...")
-    cmd = f"cd-hit -i {input_fasta} -o {output_fasta} -c {threshold} -n 3 -M 0 -d 0"
-    subprocess.run(cmd, shell=True, check=True, stdout=subprocess.DEVNULL)
-    print(f"[+] Saved: {output_fasta}")
-
-
-def extract_esm2_embeddings(fasta_file, model_name=ESM_MODEL_NAME, batch_size=ESM_BATCH_SIZE, max_len=MAX_LEN):
-    print(f"[*] Loading ESM-2 model ({model_name})...")
-    tokenizer = EsmTokenizer.from_pretrained(model_name)
-    model = EsmModel.from_pretrained(model_name)
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model.to(device)
-    model.eval()
-
-    records = list(SeqIO.parse(fasta_file, "fasta"))
-    sequences = [str(record.seq) for record in records]
-    ids = [record.id for record in records]
-
-    print(f"[*] Extracting embeddings for {len(sequences)} sequences...")
-    all_embeddings = []
-
-    with torch.no_grad():
-        for i in range(0, len(sequences), batch_size):
-            batch_seqs = sequences[i : i + batch_size]
-            inputs = tokenizer(
-                batch_seqs,
-                return_tensors="pt",
-                padding="max_length",
-                max_length=max_len,
-                truncation=True,
-            )
-            inputs = {k: v.to(device) for k, v in inputs.items()}
-
-            outputs = model(**inputs)
-            last_hidden = outputs.last_hidden_state
-
-            mask = inputs["attention_mask"].unsqueeze(-1).float()
-            last_hidden = last_hidden * mask
-
-            all_embeddings.append(last_hidden.cpu())
-
-    return ids, torch.cat(all_embeddings, dim=0)
+    try:
+        cmd = f"cd-hit -i {input_fasta} -o {output_fasta} -c {threshold} -n 3 -M 0 -d 0"
+        subprocess.run(cmd, shell=True, check=True, stdout=subprocess.DEVNULL)
+        n_before = sum(1 for _ in open(input_fasta) if True)
+        n_after = sum(1 for _ in open(output_fasta) if True)
+        print(f"[+] CD-HIT ok: {n_before//2} → {n_after//2} sequences → {output_fasta}")
+    except subprocess.CalledProcessError as e:
+        print(f"[!] CD-HIT failed (is it installed?). Skipping deduplication.")
+        print(f"    Error: {e}")
 
 
 def create_and_split_dataset(pos_fasta, neg_fasta, output_dir=DATASET_DIR):
-    os.makedirs(output_dir, exist_ok=True)
+    ensure_dirs()
 
-    pos_ids, pos_features = extract_esm2_embeddings(pos_fasta)
+    # Load ESM-2 once
+    esm_model, tokenizer, device = load_esm_model(ESM_MODEL_NAME)
+    embed_dim = get_esm_embed_dim(ESM_MODEL_NAME)
+    print(f"    ESM-2 embed_dim: {embed_dim}")
+
+    # Downsample negatives *before* extraction to save time
+    from Bio import SeqIO
+    pos_records = list(SeqIO.parse(pos_fasta, "fasta"))
+    neg_records = list(SeqIO.parse(neg_fasta, "fasta"))
+
+    if len(neg_records) > len(pos_records) * 3:
+        rng = torch.Generator().manual_seed(RANDOM_SEED)
+        idx = torch.randperm(len(neg_records), generator=rng)[: len(pos_records) * 3]
+        neg_records = [neg_records[i] for i in idx]
+        print(f"[i] Downsampled negatives: {len(neg_records)} (x{len(pos_records)*3})")
+
+    # Write downsampled temp files for extract_esm2 (which reads FASTA)
+    import tempfile
+    tmp_pos = os.path.join(tempfile.gettempdir(), "_pos.fasta")
+    tmp_neg = os.path.join(tempfile.gettempdir(), "_neg.fasta")
+    from Bio.SeqIO import write
+    write(pos_records, tmp_pos, "fasta")
+    write(neg_records, tmp_neg, "fasta")
+
+    # Extract embeddings
+    pos_ids, pos_features = extract_esm2_embeddings(
+        tmp_pos, ESM_MODEL_NAME, esm_model, tokenizer, device, ESM_BATCH_SIZE, MAX_LEN
+    )
     pos_labels = torch.ones(pos_features.size(0), dtype=torch.float32)
 
-    neg_ids, neg_features = extract_esm2_embeddings(neg_fasta)
-
-    if neg_features.size(0) > pos_features.size(0) * 3:
-        idx = torch.randperm(neg_features.size(0))[: pos_features.size(0) * 3]
-        neg_features = neg_features[idx]
-        neg_ids = [neg_ids[i] for i in idx]
-
+    neg_ids, neg_features = extract_esm2_embeddings(
+        tmp_neg, ESM_MODEL_NAME, esm_model, tokenizer, device, ESM_BATCH_SIZE, MAX_LEN
+    )
     neg_labels = torch.zeros(neg_features.size(0), dtype=torch.float32)
+
+    # Clean up temp files
+    os.unlink(tmp_pos)
+    os.unlink(tmp_neg)
 
     X = torch.cat([pos_features, neg_features], dim=0)
     y = torch.cat([pos_labels, neg_labels], dim=0)
     all_ids = pos_ids + neg_ids
 
-    print(f"[*] Feature matrix shape: {X.shape}")
-    print(f"[*] Positives: {len(pos_ids)}, Negatives: {len(neg_ids)}")
-
-    test_size_total = TEST_RATIO
-    val_size_relative = VAL_RATIO / (TRAIN_RATIO + VAL_RATIO)
+    print(f"[*] Feature tensor shape: {X.shape}")
+    print(f"[*] Pos: {len(pos_ids)}, Neg: {len(neg_ids)}")
 
     X_temp, X_test, y_temp, y_test, id_temp, id_test = train_test_split(
-        X, y, all_ids, test_size=test_size_total, random_state=RANDOM_SEED, stratify=y
+        X, y, all_ids, test_size=0.1, random_state=RANDOM_SEED, stratify=y
     )
     X_train, X_val, y_train, y_val, id_train, id_val = train_test_split(
-        X_temp,
-        y_temp,
-        id_temp,
-        test_size=val_size_relative,
-        random_state=RANDOM_SEED,
-        stratify=y_temp,
+        X_temp, y_temp, id_temp, test_size=0.111, random_state=RANDOM_SEED, stratify=y_temp
     )
 
-    torch.save({"X": X_train, "y": y_train, "ids": id_train}, os.path.join(output_dir, "train.pt"))
-    torch.save({"X": X_val, "y": y_val, "ids": id_val}, os.path.join(output_dir, "val.pt"))
-    torch.save({"X": X_test, "y": y_test, "ids": id_test}, os.path.join(output_dir, "test.pt"))
-    print(f"[+] Dataset saved to {output_dir}/")
+    for name, x, yy, ids in [
+        ("train", X_train, y_train, id_train),
+        ("val", X_val, y_val, id_val),
+        ("test", X_test, y_test, id_test),
+    ]:
+        torch.save({"X": x, "y": yy, "ids": ids}, os.path.join(output_dir, f"{name}.pt"))
+
+    print(f"[+] Dataset saved → {output_dir}/")
 
 
 if __name__ == "__main__":
     from config import RAW_POS, RAW_NEG
 
+    ensure_dirs()
     run_cd_hit(RAW_POS, CLEAN_POS, threshold=CD_HIT_THRESHOLD)
     run_cd_hit(RAW_NEG, CLEAN_NEG, threshold=CD_HIT_THRESHOLD)
     create_and_split_dataset(CLEAN_POS, CLEAN_NEG)
