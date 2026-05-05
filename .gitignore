@@ -17,3 +17,13 @@ lasso_results/
 # Jupyter notebook artifacts
 .ipynb_checkpoints/
 *.nbconvert.*
+
+# Windows system files
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Editor temporary files
+*.swp
+*.swo
+*~

@@ -4,7 +4,6 @@ import torch.nn as nn
 import numpy as np
 from torch.utils.data import Dataset
 from Bio import SeqIO
-from tqdm import tqdm
 from sklearn.metrics import (
     precision_score,
     recall_score,
@@ -138,14 +137,31 @@ def load_esm_model(model_name, device=None):
     return model, tokenizer, device
 
 
-def load_classifier_from_checkpoint(ckpt_path, embed_dim, device=None):
+def load_classifier_from_checkpoint(ckpt_path, embed_dim=None, device=None):
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if not os.path.exists(ckpt_path):
         raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
     from model import LassoPeptideClassifier
-    model = LassoPeptideClassifier(embed_dim=embed_dim).to(device)
     state = torch.load(ckpt_path, map_location=device, weights_only=True)
-    model.load_state_dict(state)
+    if isinstance(state, dict) and "arch" in state:
+        arch = state["arch"]
+        model = LassoPeptideClassifier(
+            embed_dim=arch["embed_dim"],
+            cnn_channels=arch["cnn_channels"],
+            cnn_kernels=arch["cnn_kernels"],
+            attention_heads=arch["attention_heads"],
+            mlp_hidden=arch["mlp_hidden"],
+            dropout=arch["dropout"],
+        ).to(device)
+        model.load_state_dict(state["state_dict"])
+    elif embed_dim is not None:
+        model = LassoPeptideClassifier(embed_dim=embed_dim).to(device)
+        model.load_state_dict(state)
+    else:
+        raise ValueError(
+            "Checkpoint lacks architecture info and embed_dim was not provided. "
+            "Re-save the checkpoint with arch metadata or pass embed_dim."
+        )
     model.eval()
     return model

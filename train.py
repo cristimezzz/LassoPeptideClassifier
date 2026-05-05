@@ -55,6 +55,57 @@ def train_one_epoch(model, loader, criterion, optimizer, device):
     return metrics
 
 
+def train_model(model, train_loader, val_loader, criterion, optimizer, scheduler,
+                device, epochs, patience, verbose=True, checkpoint_path=None, arch=None):
+    early_stopping = EarlyStopping(patience=patience)
+    best_val_f1 = -1.0
+    best_epoch = 0
+    best_state = None
+
+    for epoch in range(1, epochs + 1):
+        train_metrics = train_one_epoch(model, train_loader, criterion, optimizer, device)
+        val_metrics = evaluate_model(model, val_loader, criterion, device)
+        scheduler.step()
+
+        if verbose:
+            print(f"Epoch {epoch:3d}/{epochs}  ", end="")
+            print_metrics("Train", train_metrics)
+            print(f"             ", end="")
+            print_metrics("Val", val_metrics)
+
+        val_f1 = val_metrics["f1"]
+        if np.isnan(val_f1):
+            val_f1 = -1.0
+
+        if val_f1 > best_val_f1:
+            best_val_f1 = val_f1
+            best_epoch = epoch
+            if checkpoint_path is not None:
+                save_dict = {"state_dict": model.state_dict()}
+                if arch is not None:
+                    save_dict["arch"] = arch
+                torch.save(save_dict, checkpoint_path)
+            else:
+                from copy import deepcopy
+                best_state = deepcopy(model.state_dict())
+
+        early_stopping(val_f1)
+        if early_stopping.early_stop:
+            if verbose:
+                print(f"[*] Early stopping at epoch {epoch}")
+            break
+
+    if checkpoint_path is not None and os.path.exists(checkpoint_path):
+        state = torch.load(checkpoint_path, map_location=device, weights_only=True)
+        if isinstance(state, dict) and "state_dict" in state:
+            state = state["state_dict"]
+        model.load_state_dict(state)
+    elif best_state is not None:
+        model.load_state_dict(best_state)
+
+    return best_val_f1, best_epoch
+
+
 def main(esm_model=None, seed=None, checkpoint_name="best_model.pt", verbose=True,
          cnn_channels=None, cnn_kernels=None, dropout=None, lr=None, batch_size=None):
     ensure_dirs()
@@ -103,11 +154,17 @@ def main(esm_model=None, seed=None, checkpoint_name="best_model.pt", verbose=Tru
     criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
     optimizer = torch.optim.AdamW(model.parameters(), lr=_lr, weight_decay=WEIGHT_DECAY)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=EPOCHS)
-    early_stopping = EarlyStopping(patience=PATIENCE)
 
-    best_val_f1 = -1.0
-    best_epoch = 0
+    arch = {
+        "embed_dim": embed_dim,
+        "cnn_channels": _cnn_ch,
+        "cnn_kernels": _cnn_ks,
+        "attention_heads": ATTENTION_HEADS,
+        "mlp_hidden": MLP_HIDDEN,
+        "dropout": _dropout,
+    }
 
+    ckpt_path = os.path.join(CHECKPOINT_DIR, checkpoint_name)
     if verbose:
         print(f"[*] Training:   {len(train_set)} (pos:{int(pos_count)} neg:{int(neg_count)})")
         print(f"[*] Validation: {len(val_set)}")
@@ -115,40 +172,13 @@ def main(esm_model=None, seed=None, checkpoint_name="best_model.pt", verbose=Tru
         print(f"[*] Params:     {sum(p.numel() for p in model.parameters()):,}")
         print()
 
-    for epoch in range(1, EPOCHS + 1):
-        train_metrics = train_one_epoch(model, train_loader, criterion, optimizer, device)
-        val_metrics = evaluate_model(model, val_loader, criterion, device)
-        scheduler.step()
-
-        if verbose:
-            print(f"Epoch {epoch:3d}/{EPOCHS}  ", end="")
-            print_metrics("Train", train_metrics)
-            print(f"             ", end="")
-            print_metrics("Val", val_metrics)
-
-        val_f1 = val_metrics["f1"]
-        if np.isnan(val_f1):
-            val_f1 = -1.0
-
-        if val_f1 > best_val_f1:
-            best_val_f1 = val_f1
-            best_epoch = epoch
-            torch.save(model.state_dict(), os.path.join(CHECKPOINT_DIR, checkpoint_name))
-
-        early_stopping(val_f1)
-        if early_stopping.early_stop:
-            if verbose:
-                print(f"[*] Early stopping at epoch {epoch}")
-            break
+    best_val_f1, best_epoch = train_model(
+        model, train_loader, val_loader, criterion, optimizer, scheduler,
+        device, EPOCHS, PATIENCE, verbose=verbose, checkpoint_path=ckpt_path, arch=arch,
+    )
 
     if verbose:
         print(f"\n[*] Best: epoch {best_epoch}  (Val F1: {best_val_f1:.4f})")
-
-    best_path = os.path.join(CHECKPOINT_DIR, checkpoint_name)
-    if os.path.exists(best_path):
-        model.load_state_dict(torch.load(best_path, map_location=device, weights_only=True))
-    elif verbose:
-        print("[-] No best model saved, using current model for test evaluation")
 
     test_metrics = evaluate_model(model, test_loader, criterion, device)
     if verbose:

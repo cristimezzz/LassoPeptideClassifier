@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# (Unix shebang; harmless on Windows — use `python run_experiment.py`)
 """
 一键批量训练套索肽分类器，支持三种策略：
   1. multi_seed — 多个随机种子，选 F1 最优模型
@@ -13,11 +14,11 @@
 
 import argparse
 import os
+import shutil
 import sys
 import torch
 import numpy as np
 from datetime import datetime
-from copy import deepcopy
 from itertools import product
 from sklearn.model_selection import KFold
 from torch.utils.data import Dataset, DataLoader, SubsetRandomSampler
@@ -52,9 +53,7 @@ from config import (
 from model import LassoPeptideClassifier
 from utils import (
     LassoDataset,
-    EarlyStopping,
     compute_metrics,
-    print_metrics,
     evaluate_model,
     load_esm_model,
     extract_esm2_embeddings,
@@ -104,7 +103,6 @@ def run_multi_seed(esm_model, n_runs, base_seed=None):
             # save as main best model
             src = os.path.join(CHECKPOINT_DIR, f"run_{i}_model.pt")
             dst = os.path.join(CHECKPOINT_DIR, "best_model.pt")
-            import shutil
             if os.path.exists(src):
                 shutil.copy(src, dst)
         print()
@@ -186,26 +184,12 @@ def run_cv(esm_model, n_folds, seed=None):
         criterion = torch.nn.BCEWithLogitsLoss(pos_weight=pos_weight)
         optimizer = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=EPOCHS)
-        early_stopping = EarlyStopping(patience=PATIENCE)
 
-        best_val_f1 = -1.0
-        for epoch in range(1, EPOCHS + 1):
-            train_metrics = train_module.train_one_epoch(model, train_loader, criterion, optimizer, device)
-            val_metrics = evaluate_model(model, val_loader, criterion, device)
-            scheduler.step()
+        best_val_f1, _ = train_module.train_model(
+            model, train_loader, val_loader, criterion, optimizer, scheduler,
+            device, EPOCHS, PATIENCE, verbose=True, checkpoint_path=None,
+        )
 
-            val_f1 = val_metrics["f1"]
-            if np.isnan(val_f1):
-                val_f1 = -1.0
-            if val_f1 > best_val_f1:
-                best_val_f1 = val_f1
-                best_state = deepcopy(model.state_dict())
-
-            early_stopping(val_f1)
-            if early_stopping.early_stop:
-                break
-
-        model.load_state_dict(best_state)
         test_met = evaluate_model(model, test_loader, criterion, device)
         print(f"  Fold {fold+1} →  Val F1: {best_val_f1:.4f}  |  Test F1: {test_met['f1']:.4f}")
         fold_metrics.append(test_met)
@@ -276,7 +260,6 @@ def run_grid_search(esm_model):
             best_combo = results[-1]
             src = os.path.join(CHECKPOINT_DIR, f"grid_{i}_model.pt")
             dst = os.path.join(CHECKPOINT_DIR, "best_model.pt")
-            import shutil
             if os.path.exists(src):
                 shutil.copy(src, dst)
 
@@ -306,10 +289,9 @@ def run_full_pipeline(esm_model, force_redownload=False):
     print()
 
     # Step 1: download
-    from download_data import ensure_dir, fetch_lassopred_to_fasta, fetch_uniprot_negatives
+    from download_data import fetch_lassopred_to_fasta, fetch_uniprot_negatives
     from config import RAW_POS, RAW_NEG
 
-    ensure_dir()
     if force_redownload or not os.path.exists(RAW_POS):
         fetch_lassopred_to_fasta(RAW_POS)
     else:

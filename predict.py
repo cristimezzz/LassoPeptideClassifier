@@ -1,4 +1,5 @@
 import argparse
+import os
 import torch
 import pandas as pd
 from Bio import SeqIO
@@ -40,7 +41,7 @@ def predict_fasta(input_fasta, output_csv, checkpoint=None, esm_model_name=None)
         input_fasta, esm_model_name, esm_model, tokenizer, device, batch_size, MAX_LEN
     )
 
-    ckpt_path = checkpoint or CHECKPOINT_DIR + "/best_model.pt"
+    ckpt_path = checkpoint or os.path.join(CHECKPOINT_DIR, "best_model.pt")
     print(f"[*] Loading model from {ckpt_path}")
     model = load_classifier_from_checkpoint(ckpt_path, embed_dim, device)
 

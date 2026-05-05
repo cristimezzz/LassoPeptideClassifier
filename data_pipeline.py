@@ -18,19 +18,28 @@ from config import (
     ensure_dirs,
 )
 from utils import extract_esm2_embeddings, load_esm_model
+from sequence_dedup import deduplicate_fasta
 
 
 def run_cd_hit(input_fasta, output_fasta, threshold=0.5):
+    if os.path.exists(output_fasta):
+        from Bio import SeqIO
+        n = sum(1 for _ in SeqIO.parse(output_fasta, "fasta"))
+        print(f"[~] CD-HIT cached: {output_fasta} ({n} seqs)")
+        return
+
     print(f"[*] Running CD-HIT (threshold={threshold})...")
     try:
-        cmd = f"cd-hit -i {input_fasta} -o {output_fasta} -c {threshold} -n 3 -M 0 -d 0"
-        subprocess.run(cmd, shell=True, check=True, stdout=subprocess.DEVNULL)
-        n_before = sum(1 for _ in open(input_fasta) if True)
-        n_after = sum(1 for _ in open(output_fasta) if True)
-        print(f"[+] CD-HIT ok: {n_before//2} → {n_after//2} sequences → {output_fasta}")
-    except subprocess.CalledProcessError as e:
-        print(f"[!] CD-HIT failed (is it installed?). Skipping deduplication.")
-        print(f"    Error: {e}")
+        cmd = ["cd-hit", "-i", input_fasta, "-o", output_fasta,
+               "-c", str(threshold), "-n", "3", "-M", "0", "-d", "0"]
+        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, shell=False)
+        from Bio import SeqIO
+        n_before = sum(1 for _ in SeqIO.parse(input_fasta, "fasta"))
+        n_after = sum(1 for _ in SeqIO.parse(output_fasta, "fasta"))
+        print(f"[+] CD-HIT ok: {n_before} → {n_after} sequences → {output_fasta}")
+    except (subprocess.CalledProcessError, FileNotFoundError) as e:
+        print(f"[!] CD-HIT not available ({e}), using pure-Python fallback...")
+        deduplicate_fasta(input_fasta, output_fasta, threshold)
 
 
 def create_and_split_dataset(pos_fasta, neg_fasta, output_dir=DATASET_DIR, esm_model_name=None, seed=None):
@@ -77,8 +86,8 @@ def create_and_split_dataset(pos_fasta, neg_fasta, output_dir=DATASET_DIR, esm_m
     )
     neg_labels = torch.zeros(neg_features.size(0), dtype=torch.float32)
 
-    os.unlink(tmp_pos)
-    os.unlink(tmp_neg)
+    os.remove(tmp_pos)
+    os.remove(tmp_neg)
 
     X = torch.cat([pos_features, neg_features], dim=0)
     y = torch.cat([pos_labels, neg_labels], dim=0)

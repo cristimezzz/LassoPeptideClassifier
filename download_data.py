@@ -1,11 +1,7 @@
 import os
 import requests
 
-from config import DATA_DIR, UNIPROT_NEG_LIMIT
-
-
-def ensure_dir():
-    os.makedirs(DATA_DIR, exist_ok=True)
+from config import DATA_DIR, UNIPROT_NEG_LIMIT, ensure_dirs
 
 
 def fetch_lassopred_to_fasta(output_fasta):
@@ -49,9 +45,12 @@ def fetch_uniprot_negatives(output_fasta, limit=UNIPROT_NEG_LIMIT):
     )
     url = "https://rest.uniprot.org/uniprotkb/stream"
     params = {"query": query, "format": "fasta", "size": limit}
+    headers = {
+        "User-Agent": "LassoPeptideClassifier/1.0"
+    }
 
     try:
-        response = requests.get(url, params=params, stream=True)
+        response = requests.get(url, params=params, headers=headers, stream=True)
         response.raise_for_status()
 
         count = 0
@@ -76,6 +75,6 @@ def fetch_uniprot_negatives(output_fasta, limit=UNIPROT_NEG_LIMIT):
 if __name__ == "__main__":
     from config import RAW_POS, RAW_NEG
 
-    ensure_dir()
+    ensure_dirs()
     fetch_lassopred_to_fasta(RAW_POS)
     fetch_uniprot_negatives(RAW_NEG)

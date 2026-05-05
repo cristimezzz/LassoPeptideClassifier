@@ -1,3 +1,5 @@
+# Note: cd-hit is an optional system dependency (recommended but not required;
+# a pure-Python fallback runs automatically when cd-hit is unavailable).
 torch>=2.0.0
 transformers>=4.30.0
 biopython>=1.80

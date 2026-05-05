@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
 class LassoPeptideClassifier(nn.Module):
@@ -47,11 +48,15 @@ class LassoPeptideClassifier(nn.Module):
         )
 
     def forward(self, x):
+        padding_mask = (x.abs().sum(dim=-1) == 0)
         x = x.permute(0, 2, 1)
         for conv in self.conv_blocks:
             x = conv(x)
+            mask_1d = padding_mask.float().unsqueeze(1)
+            mask_1d = F.max_pool1d(mask_1d, kernel_size=2, stride=2)
+            padding_mask = mask_1d.squeeze(1).bool()
         x = x.permute(0, 2, 1)
-        attn_out, _ = self.attention(x, x, x)
+        attn_out, _ = self.attention(x, x, x, key_padding_mask=padding_mask)
         x = self.attn_norm(x + attn_out)
         x = x.mean(dim=1)
         x = self.classifier(x)

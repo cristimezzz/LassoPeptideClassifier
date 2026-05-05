@@ -19,11 +19,27 @@ FASTA 序列 → ESM-2（冻结）→ 1D Conv × 3 → Multi-Head Attention → 
 
 ```bash
 git clone https://github.com/cristimezzz/LassoPeptideClassifier.git
-cd Lasso
+cd LassoPeptideClassifier
 python3 -m venv .venv
 source .venv/bin/activate      # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
+
+#### Windows 用户注意事项
+
+- **PyTorch**: 请根据 GPU 情况选择合适的版本：
+  ```bash
+  # CUDA 11.8
+  pip install torch --index-url https://download.pytorch.org/whl/cu118
+  # CPU only
+  pip install torch --index-url https://download.pytorch.org/whl/cpu
+  ```
+- **CD-HIT**: 该工具没有原生 Windows 二进制文件。代码会自动回退到纯 Python 去重方案。
+  如需更快的去重速度，可通过 conda 安装：
+  ```bash
+  conda install -c bioconda cd-hit
+  ```
+- **虚拟环境激活**: 使用 `.venv\Scripts\activate`（PowerShell/CMD）。如使用 Git Bash，也可用 `source .venv/Scripts/activate`。
 
 ### 2. 一键批量运行（推荐）
 

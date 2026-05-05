@@ -11,13 +11,8 @@ from config import (
     DATASET_DIR,
     CHECKPOINT_DIR,
     RESULTS_DIR,
-    BATCH_SIZE,
+    PRED_BATCH_SIZE,
     ESM_MODEL_NAME,
-    CNN_CHANNELS,
-    CNN_KERNELS,
-    ATTENTION_HEADS,
-    MLP_HIDDEN,
-    DROPOUT,
     get_esm_embed_dim,
     get_model_info,
     ensure_dirs,
@@ -90,7 +85,7 @@ def collect_predictions(model, loader, device):
         logits = model(X_batch.to(device))
         probs = torch.sigmoid(logits).cpu()
         preds = (probs >= 0.5).float()
-        all_y.append(y_batch); all_pred.append(preds); all_prob.append(probs)
+        all_y.append(y_batch.cpu()); all_pred.append(preds); all_prob.append(probs)
     return (torch.cat(all_y).numpy().ravel(),
             torch.cat(all_pred).numpy().ravel(),
             torch.cat(all_prob).numpy().ravel())
@@ -107,7 +102,7 @@ def main(esm_model=None, checkpoint_name="best_model.pt", save_plots=True):
     print(f"[*] Device: {device}  |  ESM: {info['label']}  |  dim={embed_dim}")
 
     test_set = LassoDataset(os.path.join(DATASET_DIR, "test.pt"))
-    test_loader = DataLoader(test_set, batch_size=BATCH_SIZE, shuffle=False)
+    test_loader = DataLoader(test_set, batch_size=PRED_BATCH_SIZE, shuffle=False)
 
     ckpt_path = os.path.join(CHECKPOINT_DIR, checkpoint_name)
     model = load_classifier_from_checkpoint(ckpt_path, embed_dim, device)

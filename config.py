@@ -135,6 +135,9 @@ def select_esm_model(interactive=True):
                 if m["idx"] == idx:
                     return m["name"], m
             print("  [!] 无效编号，请重试\n")
-        except (ValueError, KeyboardInterrupt):
+        except ValueError:
             print("\n  [i] 使用默认模型\n")
             return ESM_MODEL_NAME, ESM_MODEL_CHOICES[1]
+        except KeyboardInterrupt:
+            print()
+            raise
