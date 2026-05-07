@@ -1,3 +1,18 @@
+"""Test-set evaluation and visualization for a trained Lasso Peptide Classifier.
+
+Loads a saved checkpoint, runs inference on test.pt, and produces:
+  - Classification metrics (accuracy, precision, recall, F1, AUC) via evaluate_model.
+  - sklearn classification_report (per-class precision/recall/F1).
+  - Four visualization plots saved to results/:
+      1. Confusion matrix (seaborn heatmap)
+      2. ROC curve with AUC annotation
+      3. Precision-Recall curve
+      4. Predicted probability distribution histogram
+
+Metrics and predictions are collected in a single forward pass via
+evaluate_model(return_predictions=True) to avoid duplicate computation.
+"""
+
 import argparse
 import os
 import torch
@@ -21,6 +36,12 @@ from utils import LassoDataset, evaluate_model, print_metrics, load_classifier_f
 
 
 def plot_confusion_matrix(y_true, y_pred, save_path):
+    """Generate and save a confusion matrix heatmap.
+
+    Args:
+        y_true, y_pred: 1D numpy arrays of integer labels (0/1).
+        save_path: path to save the PNG.
+    """
     cm = confusion_matrix(y_true, y_pred)
     plt.figure(figsize=(5, 4))
     sns.heatmap(cm, annot=True, fmt="d", cmap="Blues",
@@ -34,6 +55,13 @@ def plot_confusion_matrix(y_true, y_pred, save_path):
 
 
 def plot_roc_curve(y_true, y_prob, save_path):
+    """Generate and save an ROC curve with AUC annotation.
+
+    Args:
+        y_true: 1D numpy array of true binary labels.
+        y_prob: 1D numpy array of predicted probabilities for the positive class.
+        save_path: path to save the PNG.
+    """
     fpr, tpr, _ = roc_curve(y_true, y_prob)
     roc_auc = auc(fpr, tpr)
     plt.figure(figsize=(6, 5))
@@ -50,6 +78,13 @@ def plot_roc_curve(y_true, y_prob, save_path):
 
 
 def plot_pr_curve(y_true, y_prob, save_path):
+    """Generate and save a Precision-Recall curve.
+
+    Args:
+        y_true: 1D numpy array of true binary labels.
+        y_prob: 1D numpy array of predicted probabilities.
+        save_path: path to save the PNG.
+    """
     precision, recall, _ = precision_recall_curve(y_true, y_prob)
     plt.figure(figsize=(6, 5))
     plt.plot(recall, precision, lw=2)
@@ -63,6 +98,13 @@ def plot_pr_curve(y_true, y_prob, save_path):
 
 
 def plot_probability_distribution(y_true, y_prob, save_path):
+    """Generate and save a histogram of predicted probabilities by true class.
+
+    Args:
+        y_true: 1D numpy array of true binary labels (0=negative, 1=positive).
+        y_prob: 1D numpy array of predicted probabilities.
+        save_path: path to save the PNG.
+    """
     yt, yp = np.array(y_true).ravel(), np.array(y_prob).ravel()
     plt.figure(figsize=(8, 4))
     plt.hist(yp[yt == 0], bins=40, alpha=0.6, label="Negative", color="steelblue", edgecolor="white")
@@ -77,21 +119,17 @@ def plot_probability_distribution(y_true, y_prob, save_path):
     plt.close()
 
 
-@torch.no_grad()
-def collect_predictions(model, loader, device):
-    model.eval()
-    all_y, all_pred, all_prob = [], [], []
-    for X_batch, y_batch in loader:
-        logits = model(X_batch.to(device))
-        probs = torch.sigmoid(logits).cpu()
-        preds = (probs >= 0.5).float()
-        all_y.append(y_batch.cpu()); all_pred.append(preds); all_prob.append(probs)
-    return (torch.cat(all_y).numpy().ravel(),
-            torch.cat(all_pred).numpy().ravel(),
-            torch.cat(all_prob).numpy().ravel())
-
-
 def main(esm_model=None, checkpoint_name="best_model.pt", save_plots=True):
+    """Load a checkpoint, evaluate on the test set, and generate plots.
+
+    Args:
+        esm_model: HuggingFace ESM-2 model ID. Default from config.
+        checkpoint_name: checkpoint filename in checkpoints/. Default "best_model.pt".
+        save_plots: if True, save PNGs and classification report to results/.
+
+    Returns:
+        dict of test metrics.
+    """
     ensure_dirs()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -108,12 +146,16 @@ def main(esm_model=None, checkpoint_name="best_model.pt", save_plots=True):
     model = load_classifier_from_checkpoint(ckpt_path, embed_dim, device)
     print(f"[*] Loaded checkpoint: {ckpt_path}")
 
+    # Single forward pass: compute metrics + collect raw predictions for plotting
     criterion = torch.nn.BCEWithLogitsLoss()
-    test_metrics = evaluate_model(model, test_loader, criterion, device)
+    test_metrics, (y_true_t, y_pred_t, y_prob_t) = evaluate_model(
+        model, test_loader, criterion, device, return_predictions=True
+    )
+    y_true = y_true_t.numpy().ravel()
+    y_pred = y_pred_t.numpy().ravel()
+    y_prob = y_prob_t.numpy().ravel()
     print()
     print_metrics("Test", test_metrics)
-
-    y_true, y_pred, y_prob = collect_predictions(model, test_loader, device)
 
     report_text = classification_report(
         y_true, y_pred, target_names=["Negative", "Positive"], digits=4
@@ -140,8 +182,8 @@ def main(esm_model=None, checkpoint_name="best_model.pt", save_plots=True):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(description="Evaluate a trained Lasso Peptide Classifier on the test set")
     parser.add_argument("--esm-model", default=None, help="ESM-2 model name")
-    parser.add_argument("--checkpoint", default="best_model.pt", help="Checkpoint filename")
+    parser.add_argument("--checkpoint", default="best_model.pt", help="Checkpoint filename in checkpoints/")
     args = parser.parse_args()
     main(esm_model=args.esm_model, checkpoint_name=args.checkpoint)

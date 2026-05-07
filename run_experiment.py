@@ -1,15 +1,20 @@
 #!/usr/bin/env python3
 # (Unix shebang; harmless on Windows — use `python run_experiment.py`)
-"""
-一键批量训练套索肽分类器，支持三种策略：
-  1. multi_seed — 多个随机种子，选 F1 最优模型
-  2. cv         — K 折交叉验证，报告均值±标准差
-  3. grid       — 超参数网格搜索，找最优组合
+"""One-click batch experiment runner for the Lasso Peptide Classifier.
 
-用法:
-  python run_experiment.py --strategy multi_seed --runs 5 --esm-model facebook/esm2_t12_35M_UR50D
+Supports three training strategies:
+  1. multi_seed — N runs with different random seeds, reports mean ± std.
+  2. cv         — K-fold cross-validation on merged train+val, per-fold test metrics.
+  3. grid       — hyperparameter grid search (LR × dropout × CNN channels × batch size).
+
+Also orchestrates the full data pipeline (download → CD-HIT → ESM extraction → train)
+when --skip-pipeline is not specified.
+
+Usage:
+  python run_experiment.py --strategy multi_seed --runs 5
   python run_experiment.py --strategy cv --folds 5
   python run_experiment.py --strategy grid
+  python run_experiment.py --strategy multi_seed --esm-model facebook/esm2_t6_8M_UR50D --runs 3
 """
 
 import argparse
@@ -29,7 +34,6 @@ from config import (
     CHECKPOINT_DIR,
     RANDOM_SEED,
     MAX_LEN,
-    ESM_BATCH_SIZE,
     BATCH_SIZE,
     EPOCHS,
     LR,
@@ -62,10 +66,23 @@ import train as train_module
 
 
 # ═══════════════════════════════════════════════════════════
-#  策略 1: multi_seed — 多随机种子训练
+#  Strategy 1: multi_seed — multi-random-seed training
 # ═══════════════════════════════════════════════════════════
 
 def run_multi_seed(esm_model, n_runs, base_seed=None):
+    """Run N independent training runs with incremental random seeds.
+
+    Each run uses seed = base_seed + i. The run with highest test F1 is copied
+    to checkpoints/best_model.pt. Reports mean ± std of test F1 and AUC.
+
+    Args:
+        esm_model: HuggingFace ESM-2 model ID.
+        n_runs: number of training runs.
+        base_seed: starting random seed. Default from config.RANDOM_SEED.
+
+    Returns:
+        list of per-run result dicts.
+    """
     if base_seed is None:
         base_seed = RANDOM_SEED
 
@@ -100,14 +117,13 @@ def run_multi_seed(esm_model, n_runs, base_seed=None):
 
         if f1 > best_f1:
             best_f1 = f1; best_seed = seed
-            # save as main best model
             src = os.path.join(CHECKPOINT_DIR, f"run_{i}_model.pt")
             dst = os.path.join(CHECKPOINT_DIR, "best_model.pt")
             if os.path.exists(src):
                 shutil.copy(src, dst)
         print()
 
-    # summary
+    # Print summary statistics
     all_f1 = np.array(all_f1)
     all_auc = np.array([a for a in all_auc if not np.isnan(a)])
     print("=" * 60)
@@ -122,10 +138,12 @@ def run_multi_seed(esm_model, n_runs, base_seed=None):
 
 
 # ═══════════════════════════════════════════════════════════
-#  策略 2: cv — K 折交叉验证
+#  Strategy 2: cv — K-fold cross-validation
 # ═══════════════════════════════════════════════════════════
 
 class CombinedDataset(Dataset):
+    """Merges two .pt dataset files (train + val) into one Dataset for CV folds."""
+
     def __init__(self, pt_path_a, pt_path_b):
         da = torch.load(pt_path_a, map_location="cpu", weights_only=True)
         db = torch.load(pt_path_b, map_location="cpu", weights_only=True)
@@ -137,6 +155,19 @@ class CombinedDataset(Dataset):
 
 
 def run_cv(esm_model, n_folds, seed=None):
+    """K-fold cross-validation on merged train+val with hold-out test evaluation.
+
+    For each fold, trains a fresh model on K-1 folds, validates on the held-out
+    fold, and evaluates on the separate test set. Reports mean ± std across folds.
+
+    Args:
+        esm_model: HuggingFace ESM-2 model ID.
+        n_folds: number of cross-validation folds.
+        seed: random seed for fold splitting. Default from config.RANDOM_SEED.
+
+    Returns:
+        list of per-fold test metric dicts.
+    """
     if seed is None:
         seed = RANDOM_SEED
 
@@ -178,6 +209,7 @@ def run_cv(esm_model, n_folds, seed=None):
             dropout=DROPOUT,
         ).to(device)
 
+        # Class-balanced loss per fold (distribution may vary)
         pos_count = (combined.y[train_idx] == 1).sum().item()
         neg_count = len(train_idx) - pos_count
         pos_weight = torch.tensor([neg_count / max(pos_count, 1)]).to(device)
@@ -195,7 +227,7 @@ def run_cv(esm_model, n_folds, seed=None):
         fold_metrics.append(test_met)
         print()
 
-    # summary
+    # Summary
     all_f1 = np.array([m["f1"] for m in fold_metrics])
     all_auc = np.array([m["auc_roc"] for m in fold_metrics if not np.isnan(m["auc_roc"])])
     print("=" * 60)
@@ -208,10 +240,22 @@ def run_cv(esm_model, n_folds, seed=None):
 
 
 # ═══════════════════════════════════════════════════════════
-#  策略 3: grid — 超参数网格搜索
+#  Strategy 3: grid — hyperparameter grid search
 # ═══════════════════════════════════════════════════════════
 
 def run_grid_search(esm_model):
+    """Exhaustive hyperparameter grid search over lr × dropout × cnn_channels × batch_size.
+
+    Evaluates every combination in the Cartesian product of GRID_LR, GRID_DROPOUT,
+    GRID_CNN_CHANNELS, and GRID_BATCH_SIZE (defined in config.py). Reports the
+    Top-5 combinations ranked by test F1 and copies the best model to best_model.pt.
+
+    Args:
+        esm_model: HuggingFace ESM-2 model ID.
+
+    Returns:
+        list of result dicts sorted by F1 descending.
+    """
     info = get_model_info(esm_model)
 
     combinations = list(product(GRID_LR, GRID_DROPOUT, GRID_CNN_CHANNELS, GRID_BATCH_SIZE))
@@ -241,7 +285,7 @@ def run_grid_search(esm_model):
             esm_model=esm_model,
             seed=RANDOM_SEED,
             checkpoint_name=f"grid_{i}_model.pt",
-            verbose=False,
+            verbose=False,                   # suppress per-epoch output for grid search
             lr=lr,
             dropout=dp,
             cnn_channels=convert_cnn(ch),
@@ -263,7 +307,7 @@ def run_grid_search(esm_model):
             if os.path.exists(src):
                 shutil.copy(src, dst)
 
-    # Top-5
+    # Top-5 results
     results.sort(key=lambda x: x["f1"], reverse=True)
     print("=" * 60)
     print(f"  Top-5 Results:")
@@ -281,15 +325,23 @@ def run_grid_search(esm_model):
 
 
 # ═══════════════════════════════════════════════════════════
-#  主入口
+#  Main entry point
 # ═══════════════════════════════════════════════════════════
 
 def run_full_pipeline(esm_model, force_redownload=False):
+    """Execute the full data preparation pipeline: download + CD-HIT + ESM extraction.
+
+    Called by main() before training unless --skip-pipeline is set.
+
+    Args:
+        esm_model: HuggingFace ESM-2 model ID.
+        force_redownload: if True, re-download even if cache files exist.
+    """
     print(f"[*] Preparing data for {esm_model} ...")
     print()
 
     # Step 1: download
-    from download_data import fetch_lassopred_to_fasta, fetch_uniprot_negatives
+    from data_pipeline import fetch_lassopred_to_fasta, fetch_uniprot_negatives
     from config import RAW_POS, RAW_NEG
 
     if force_redownload or not os.path.exists(RAW_POS):
@@ -316,13 +368,14 @@ def run_full_pipeline(esm_model, force_redownload=False):
 
 
 def main():
+    """CLI entry point: parse args, prepare data, run selected strategy."""
     parser = argparse.ArgumentParser(
         description="Lasso peptide classifier — batch experiment runner",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
   python run_experiment.py --strategy multi_seed --runs 5
-  python run_experiment.py --strategy cv --folds 5  
+  python run_experiment.py --strategy cv --folds 5
   python run_experiment.py --strategy grid
   python run_experiment.py --strategy multi_seed --esm-model facebook/esm2_t6_8M_UR50D --runs 3
         """,
@@ -346,7 +399,7 @@ Examples:
 
     ensure_dirs()
 
-    # model selection
+    # Model selection (explicit or interactive)
     if args.esm_model:
         esm_model = args.esm_model
         print_model_table()
@@ -355,7 +408,7 @@ Examples:
     else:
         esm_model, info = select_esm_model(interactive=True)
 
-    # Step 1-2: data preparation (only once)
+    # Step 1-2: data preparation (once, shared across all strategies)
     if not args.skip_pipeline:
         run_full_pipeline(esm_model, force_redownload=args.redownload)
     else:

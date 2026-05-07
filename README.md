@@ -70,11 +70,11 @@ python run_experiment.py --strategy multi_seed --runs 5 \
 如果只需要单次训练：
 
 ```bash
-python download_data.py            # 1. 下载数据
-python data_pipeline.py            # 2. CD-HIT + ESM-2 特征提取 → dataset/*.pt
-python train.py                    # 3. 训练
-python evaluate.py                 # 4. 测试集评估 + 可视化
-python predict.py -i seqs.fasta    # 5. 预测新序列
+python data_pipeline.py --download-only  # 1. 仅下载数据
+python data_pipeline.py                  # 2. CD-HIT + ESM-2 特征提取 → dataset/*.pt
+python train.py                          # 3. 训练
+python evaluate.py                       # 4. 测试集评估 + 可视化
+python predict.py -i seqs.fasta          # 5. 预测新序列
 ```
 
 ## ESM-2 模型选择
@@ -140,18 +140,17 @@ Notebook 内置：
 ## 项目结构
 
 ```
-Lasso/
-├── run_experiment.py                 # 一键批量训练（三种策略）
-├── download_data.py                  # 数据下载
-├── data_pipeline.py                  # CD-HIT + ESM-2 特征提取
-├── train.py                          # 训练
-├── evaluate.py                       # 测试评估 + 可视化
-├── predict.py                        # 推理
-├── model.py                          # 模型定义
-├── config.py                         # 配置参数 + 模型选择表
-├── utils.py                          # 工具函数（数据集/早停/评估）
-├── requirements.txt                  # 依赖
-├── lasso_peptide_classifier.ipynb    # 完整 Jupyter Notebook
+LassoPeptideClassifier/
+├── run_experiment.py              # 一键批量训练（三种策略：multi_seed / cv / grid）
+├── data_pipeline.py               # 数据准备（下载 + CD-HIT去重 + ESM-2特征提取 + 数据集拆分）
+├── train.py                       # 单次训练
+├── evaluate.py                    # 测试评估 + 可视化（混淆矩阵/ROC/PR/概率分布）
+├── predict.py                     # 推理（FASTA → CSV）
+├── model.py                       # 模型定义（CNN + Multi-Head Attention）
+├── config.py                      # 全局配置（路径/超参数/ESM-2模型表）
+├── utils.py                       # 工具函数（数据集/早停/指标/ESM辅助/checkpoint加载）
+├── requirements.txt               # Python 依赖
+├── lasso_peptide_classifier.ipynb # 完整 Jupyter Notebook
 └── README.md
 ```
 

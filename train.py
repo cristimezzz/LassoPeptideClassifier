@@ -1,3 +1,14 @@
+"""Single-run training script for the Lasso Peptide Classifier.
+
+Trains LassoPeptideClassifier on pre-computed ESM-2 embeddings from dataset/*.pt.
+Uses BCEWithLogitsLoss with class-balanced pos_weight, AdamW optimizer, and
+cosine annealing LR schedule. Saves the best checkpoint (by validation F1)
+with architecture metadata for easy reloading.
+
+Can run standalone (python train.py) or be imported by run_experiment.py
+for multi-seed / CV / grid search strategies.
+"""
+
 import argparse
 import os
 import torch
@@ -28,6 +39,18 @@ from utils import LassoDataset, EarlyStopping, compute_metrics, print_metrics, e
 
 
 def train_one_epoch(model, loader, criterion, optimizer, device):
+    """Run one training epoch.
+
+    Args:
+        model: LassoPeptideClassifier.
+        loader: DataLoader for training set.
+        criterion: loss function (BCEWithLogitsLoss).
+        optimizer: PyTorch optimizer.
+        device: torch device.
+
+    Returns:
+        dict with keys loss, accuracy, precision, recall, f1, auc_roc for the epoch.
+    """
     model.train()
     total_loss = 0.0
     all_y, all_pred, all_prob = [], [], []
@@ -41,7 +64,7 @@ def train_one_epoch(model, loader, criterion, optimizer, device):
         optimizer.step()
 
         total_loss += loss.item() * X_batch.size(0)
-        probs = torch.sigmoid(logits.detach())
+        probs = torch.sigmoid(logits.detach())       # detach: metrics don't need grad
         preds = (probs >= 0.5).float()
         all_y.append(y_batch.cpu())
         all_pred.append(preds.cpu())
@@ -57,10 +80,30 @@ def train_one_epoch(model, loader, criterion, optimizer, device):
 
 def train_model(model, train_loader, val_loader, criterion, optimizer, scheduler,
                 device, epochs, patience, verbose=True, checkpoint_path=None, arch=None):
+    """Full training loop with early stopping and checkpoint management.
+
+    Tracks best model by validation F1. If checkpoint_path is provided, saves the
+    best model to disk (with optional arch metadata). Otherwise keeps best state
+    in memory via deepcopy.
+
+    Args:
+        model: LassoPeptideClassifier instance on target device.
+        train_loader, val_loader: DataLoaders.
+        criterion, optimizer, scheduler: training components.
+        device: torch device.
+        epochs: max epochs (early stopping may stop earlier).
+        patience: early stopping patience (epochs without improvement).
+        verbose: if True, print per-epoch metrics.
+        checkpoint_path: path to save best model. If None, keeps in memory.
+        arch: optional dict of architecture params to embed in checkpoint.
+
+    Returns:
+        (best_val_f1, best_epoch) tuple. best_val_f1 is -1.0 if no improvement.
+    """
     early_stopping = EarlyStopping(patience=patience)
     best_val_f1 = -1.0
     best_epoch = 0
-    best_state = None
+    best_state = None  # fallback for in-memory best model
 
     for epoch in range(1, epochs + 1):
         train_metrics = train_one_epoch(model, train_loader, criterion, optimizer, device)
@@ -95,6 +138,7 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, scheduler
                 print(f"[*] Early stopping at epoch {epoch}")
             break
 
+    # Restore best model weights
     if checkpoint_path is not None and os.path.exists(checkpoint_path):
         state = torch.load(checkpoint_path, map_location=device, weights_only=True)
         if isinstance(state, dict) and "state_dict" in state:
@@ -108,6 +152,22 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, scheduler
 
 def main(esm_model=None, seed=None, checkpoint_name="best_model.pt", verbose=True,
          cnn_channels=None, cnn_kernels=None, dropout=None, lr=None, batch_size=None):
+    """Entry point for a single training run.
+
+    Loads the pre-split dataset, constructs the model with optionally overridden
+    hyperparameters, computes class-balanced loss weights, and runs the training loop.
+
+    Args:
+        esm_model: HuggingFace ESM-2 model ID. Default from config.
+        seed: random seed for reproducibility. Default from config.
+        checkpoint_name: filename for the saved checkpoint. Default "best_model.pt".
+        verbose: if True, print detailed training progress.
+        cnn_channels, cnn_kernels, dropout, lr, batch_size: override config defaults
+            (used by grid search in run_experiment.py).
+
+    Returns:
+        dict of test set metrics (accuracy, precision, recall, f1, auc_roc, loss).
+    """
     ensure_dirs()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -125,6 +185,7 @@ def main(esm_model=None, seed=None, checkpoint_name="best_model.pt", verbose=Tru
     if verbose:
         print(f"[*] Device: {device}, embed_dim: {embed_dim}, seed: {actual_seed}")
 
+    # Load pre-computed datasets
     train_set = LassoDataset(os.path.join(DATASET_DIR, "train.pt"))
     val_set = LassoDataset(os.path.join(DATASET_DIR, "val.pt"))
     test_set = LassoDataset(os.path.join(DATASET_DIR, "test.pt"))
@@ -134,6 +195,7 @@ def main(esm_model=None, seed=None, checkpoint_name="best_model.pt", verbose=Tru
     val_loader = DataLoader(val_set, batch_size=bs, shuffle=False)
     test_loader = DataLoader(test_set, batch_size=bs, shuffle=False)
 
+    # Optional hyperparameter overrides (for grid search)
     _cnn_ch = cnn_channels or CNN_CHANNELS
     _cnn_ks = cnn_kernels or CNN_KERNELS
     _dropout = dropout if dropout is not None else DROPOUT
@@ -148,6 +210,7 @@ def main(esm_model=None, seed=None, checkpoint_name="best_model.pt", verbose=Tru
         dropout=_dropout,
     ).to(device)
 
+    # Class-balanced loss: pos_weight = neg_count / pos_count
     pos_count = (train_set.y == 1).sum().item()
     neg_count = (train_set.y == 0).sum().item()
     pos_weight = torch.tensor([neg_count / max(pos_count, 1)]).to(device)
@@ -155,6 +218,7 @@ def main(esm_model=None, seed=None, checkpoint_name="best_model.pt", verbose=Tru
     optimizer = torch.optim.AdamW(model.parameters(), lr=_lr, weight_decay=WEIGHT_DECAY)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=EPOCHS)
 
+    # Architecture metadata saved alongside state_dict for checkpoint portability
     arch = {
         "embed_dim": embed_dim,
         "cnn_channels": _cnn_ch,
@@ -180,6 +244,7 @@ def main(esm_model=None, seed=None, checkpoint_name="best_model.pt", verbose=Tru
     if verbose:
         print(f"\n[*] Best: epoch {best_epoch}  (Val F1: {best_val_f1:.4f})")
 
+    # Final evaluation on test set
     test_metrics = evaluate_model(model, test_loader, criterion, device)
     if verbose:
         print()
@@ -189,7 +254,7 @@ def main(esm_model=None, seed=None, checkpoint_name="best_model.pt", verbose=Tru
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(description="Single-run training for Lasso Peptide Classifier")
     parser.add_argument("--esm-model", default=None, help="ESM-2 model name")
     parser.add_argument("--seed", type=int, default=None, help="Random seed")
     args = parser.parse_args()
