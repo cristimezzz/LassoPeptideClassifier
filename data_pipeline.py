@@ -70,11 +70,13 @@ def create_and_split_dataset(pos_fasta, neg_fasta, output_dir=DATASET_DIR, esm_m
         print(f"[i] Downsampled negatives: {len(neg_records)} (x{len(pos_records)*3})")
 
     import tempfile
-    tmp_pos = os.path.join(tempfile.gettempdir(), "_pos.fasta")
-    tmp_neg = os.path.join(tempfile.gettempdir(), "_neg.fasta")
     from Bio.SeqIO import write
-    write(pos_records, tmp_pos, "fasta")
-    write(neg_records, tmp_neg, "fasta")
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".fasta", delete=False) as f_pos:
+        write(pos_records, f_pos, "fasta")
+        tmp_pos = f_pos.name
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".fasta", delete=False) as f_neg:
+        write(neg_records, f_neg, "fasta")
+        tmp_neg = f_neg.name
 
     pos_ids, pos_features = extract_esm2_embeddings(
         tmp_pos, esm_model_name, esm_model, tokenizer, device, batch_size, MAX_LEN

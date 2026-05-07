@@ -54,15 +54,19 @@ def fetch_uniprot_negatives(output_fasta, limit=UNIPROT_NEG_LIMIT):
         response.raise_for_status()
 
         count = 0
-        with open(output_fasta, "w") as f:
+        pending_sequence = False
+        with open(output_fasta, "w", encoding="utf-8") as f:
             for line in response.iter_lines(decode_unicode=True):
                 if not line:
                     continue
-                f.write(line + "\n")
                 if line.startswith(">"):
+                    if count >= limit:
+                        break
                     count += 1
-                if count >= limit:
-                    break
+                    pending_sequence = True
+                elif pending_sequence:
+                    pending_sequence = False
+                f.write(line + "\n")
 
         print(f"[+] Downloaded {count} negative sequences → {output_fasta}")
         return count

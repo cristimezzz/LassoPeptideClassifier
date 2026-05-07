@@ -33,11 +33,10 @@ def predict_fasta(input_fasta, output_csv, checkpoint=None, esm_model_name=None)
         print("[-] No sequences found in input file")
         return
 
-    seq_ids = [r.id for r in records]
     print(f"[*] Found {len(records)} sequences, extracting ESM-2 embeddings...")
 
     esm_model, tokenizer, device = load_esm_model(esm_model_name)
-    _, embeddings = extract_esm2_embeddings(
+    seq_ids, embeddings = extract_esm2_embeddings(
         input_fasta, esm_model_name, esm_model, tokenizer, device, batch_size, MAX_LEN
     )
 
