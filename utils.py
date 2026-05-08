@@ -39,6 +39,11 @@ class LassoDataset(Dataset):
         data = torch.load(pt_path, map_location="cpu", weights_only=True)
         self.X = data["X"]
         self.y = data["y"].unsqueeze(1)  # (N,) → (N, 1) for BCEWithLogitsLoss
+        if self.X.dim() != 3:
+            raise ValueError(
+                f"Expected X to have 3 dimensions (N, seq_len, embed_dim), "
+                f"got shape {tuple(self.X.shape)}"
+            )
 
     def __len__(self):
         return len(self.y)
@@ -74,7 +79,7 @@ class EarlyStopping:
             return False
         if self.best_score is None:
             self.best_score = val_score
-            return True
+            return False
         if val_score > self.best_score + self.min_delta:
             self.best_score = val_score
             self.counter = 0
@@ -155,7 +160,7 @@ def evaluate_model(model, loader, criterion, device, return_predictions=False):
     y_pred = torch.cat(all_pred)
     y_prob = torch.cat(all_prob)
     metrics = compute_metrics(y_true, y_pred, y_prob)
-    metrics["loss"] = total_loss / len(loader.dataset)
+    metrics["loss"] = total_loss / max(len(loader.dataset), 1)
     if return_predictions:
         return metrics, (y_true, y_pred, y_prob)
     return metrics
@@ -182,6 +187,8 @@ def extract_esm2_embeddings(fasta_file, model_name, model, tokenizer, device, ba
     records = list(SeqIO.parse(fasta_file, "fasta"))
     sequences = [str(r.seq) for r in records]
     ids = [r.id for r in records]
+    if not records:
+        raise ValueError(f"No sequences found in FASTA file: {fasta_file}")
 
     all_embeds = []
     with torch.no_grad():
@@ -220,8 +227,14 @@ def load_esm_model(model_name, device=None):
     from transformers import EsmTokenizer, EsmModel
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    tokenizer = EsmTokenizer.from_pretrained(model_name)
-    model = EsmModel.from_pretrained(model_name).to(device).eval()
+    try:
+        tokenizer = EsmTokenizer.from_pretrained(model_name)
+        model = EsmModel.from_pretrained(model_name).to(device).eval()
+    except (OSError, EnvironmentError) as e:
+        raise RuntimeError(
+            f"Failed to load ESM model '{model_name}'. "
+            f"First use requires network access. Original error: {e}"
+        ) from e
     return model, tokenizer, device
 
 
@@ -250,9 +263,16 @@ def load_classifier_from_checkpoint(ckpt_path, embed_dim=None, device=None):
         raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
     from model import LassoPeptideClassifier
     state = torch.load(ckpt_path, map_location=device, weights_only=True)
+    ARCH_KEYS = ["embed_dim", "cnn_channels", "cnn_kernels", "attention_heads", "mlp_hidden", "dropout"]
     if isinstance(state, dict) and "arch" in state:
         # Full format with architecture metadata
         arch = state["arch"]
+        missing = [k for k in ARCH_KEYS if k not in arch]
+        if missing:
+            raise ValueError(
+                f"Checkpoint arch is missing keys: {missing}. "
+                f"The checkpoint may be corrupted or from an older version."
+            )
         model = LassoPeptideClassifier(
             embed_dim=arch["embed_dim"],
             cnn_channels=arch["cnn_channels"],

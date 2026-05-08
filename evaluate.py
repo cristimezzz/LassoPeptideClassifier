@@ -119,7 +119,7 @@ def plot_probability_distribution(y_true, y_prob, save_path):
     plt.close()
 
 
-def main(esm_model=None, checkpoint_name="best_model.pt", save_plots=True):
+def main(esm_model=None, checkpoint_name="best_model.pt", save_plots=True, device=None):
     """Load a checkpoint, evaluate on the test set, and generate plots.
 
     Args:
@@ -131,7 +131,8 @@ def main(esm_model=None, checkpoint_name="best_model.pt", save_plots=True):
         dict of test metrics.
     """
     ensure_dirs()
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     if esm_model is None:
         esm_model = ESM_MODEL_NAME
@@ -139,8 +140,17 @@ def main(esm_model=None, checkpoint_name="best_model.pt", save_plots=True):
     info = get_model_info(esm_model)
     print(f"[*] Device: {device}  |  ESM: {info['label']}  |  dim={embed_dim}")
 
-    test_set = LassoDataset(os.path.join(DATASET_DIR, "test.pt"))
+    test_path = os.path.join(DATASET_DIR, "test.pt")
+    if not os.path.exists(test_path):
+        raise FileNotFoundError(
+            f"Test dataset not found: {test_path}. Run data_pipeline.py first."
+        )
+    test_set = LassoDataset(test_path)
     test_loader = DataLoader(test_set, batch_size=PRED_BATCH_SIZE, shuffle=False)
+
+    if len(test_set) == 0:
+        print("[!] Test dataset is empty, skipping evaluation.")
+        return {}
 
     ckpt_path = os.path.join(CHECKPOINT_DIR, checkpoint_name)
     model = load_classifier_from_checkpoint(ckpt_path, embed_dim, device)

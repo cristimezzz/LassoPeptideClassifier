@@ -118,6 +118,8 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, scheduler
 
         val_f1 = val_metrics["f1"]
         if np.isnan(val_f1):
+            if verbose:
+                print(f"     [!] Warning: NaN F1 at epoch {epoch}. Replacing with -1.0")
             val_f1 = -1.0
 
         if val_f1 > best_val_f1:
@@ -146,12 +148,17 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, scheduler
         model.load_state_dict(state)
     elif best_state is not None:
         model.load_state_dict(best_state)
+    else:
+        if verbose:
+            print("[!] Warning: No best model found (all val scores may be NaN). "
+                  "Keeping final parameters.")
 
     return best_val_f1, best_epoch
 
 
 def main(esm_model=None, seed=None, checkpoint_name="best_model.pt", verbose=True,
-         cnn_channels=None, cnn_kernels=None, dropout=None, lr=None, batch_size=None):
+         cnn_channels=None, cnn_kernels=None, dropout=None, lr=None, batch_size=None,
+         device=None):
     """Entry point for a single training run.
 
     Loads the pre-split dataset, constructs the model with optionally overridden
@@ -169,7 +176,8 @@ def main(esm_model=None, seed=None, checkpoint_name="best_model.pt", verbose=Tru
         dict of test set metrics (accuracy, precision, recall, f1, auc_roc, loss).
     """
     ensure_dirs()
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     if esm_model is None:
         esm_model = ESM_MODEL_NAME
@@ -181,11 +189,22 @@ def main(esm_model=None, seed=None, checkpoint_name="best_model.pt", verbose=Tru
         actual_seed = RANDOM_SEED
         torch.manual_seed(actual_seed)
 
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(actual_seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
     embed_dim = get_esm_embed_dim(esm_model)
     if verbose:
         print(f"[*] Device: {device}, embed_dim: {embed_dim}, seed: {actual_seed}")
 
     # Load pre-computed datasets
+    for split in ("train", "val", "test"):
+        path = os.path.join(DATASET_DIR, f"{split}.pt")
+        if not os.path.exists(path):
+            raise FileNotFoundError(
+                f"Dataset file not found: {path}. Run data_pipeline.py first."
+            )
     train_set = LassoDataset(os.path.join(DATASET_DIR, "train.pt"))
     val_set = LassoDataset(os.path.join(DATASET_DIR, "val.pt"))
     test_set = LassoDataset(os.path.join(DATASET_DIR, "test.pt"))

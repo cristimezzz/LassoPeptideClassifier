@@ -46,6 +46,19 @@ class LassoPeptideClassifier(nn.Module):
         if cnn_kernels is None:
             cnn_kernels = [5, 3, 3]
 
+        if len(cnn_channels) != len(cnn_kernels):
+            raise ValueError(
+                f"cnn_channels and cnn_kernels must have the same length, "
+                f"got {len(cnn_channels)} vs {len(cnn_kernels)}"
+            )
+        if not 0 <= dropout <= 1:
+            raise ValueError(f"dropout must be in [0, 1], got {dropout}")
+        if attention_heads <= 0:
+            raise ValueError(f"attention_heads must be positive, got {attention_heads}")
+        for i, ch in enumerate(cnn_channels):
+            if ch <= 0:
+                raise ValueError(f"cnn_channels[{i}] must be positive, got {ch}")
+
         # Stacked 1D convolutional blocks with batch norm and max pooling
         in_ch = embed_dim
         conv_blocks = []
@@ -63,6 +76,10 @@ class LassoPeptideClassifier(nn.Module):
 
         # Multi-head self-attention on the CNN output features
         attn_dim = cnn_channels[-1]
+        if attn_dim % attention_heads != 0:
+            raise ValueError(
+                f"attn_dim ({attn_dim}) must be divisible by attention_heads ({attention_heads})"
+            )
         self.attention = nn.MultiheadAttention(
             attn_dim, num_heads=attention_heads, batch_first=True
         )
@@ -88,7 +105,7 @@ class LassoPeptideClassifier(nn.Module):
         """
         # Build padding mask: positions where the embedding vector is all-zero are padding.
         # ESM-2 with padding="max_length" produces zero embeddings for padded positions.
-        padding_mask = (x.abs().sum(dim=-1) == 0)
+        padding_mask = (x.abs().sum(dim=-1) < 1e-8)
 
         # Permute to (batch, channels, seq_len) for Conv1d
         x = x.permute(0, 2, 1)

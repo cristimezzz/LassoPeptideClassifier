@@ -110,7 +110,10 @@ def run_multi_seed(esm_model, n_runs, base_seed=None):
             verbose=True,
         )
 
-        f1 = metrics["f1"] if not np.isnan(metrics["f1"]) else 0.0
+        f1 = metrics["f1"]
+        if np.isnan(f1):
+            print(f"  [!] Warning: NaN F1 for seed={seed}. Replacing with 0.0")
+            f1 = 0.0
         auc = metrics["auc_roc"] if not np.isnan(metrics["auc_roc"]) else float("nan")
         all_f1.append(f1); all_auc.append(auc)
         results.append({"seed": seed, "f1": f1, "auc": auc, **metrics})
@@ -125,6 +128,9 @@ def run_multi_seed(esm_model, n_runs, base_seed=None):
 
     # Print summary statistics
     all_f1 = np.array(all_f1)
+    nan_count = sum(1 for a in all_auc if np.isnan(a))
+    if nan_count:
+        print(f"[!] Warning: {nan_count} NaN AUC values excluded from summary.")
     all_auc = np.array([a for a in all_auc if not np.isnan(a)])
     print("=" * 60)
     print(f"  Summary ({n_runs} runs):")
@@ -292,7 +298,10 @@ def run_grid_search(esm_model):
             batch_size=bs,
         )
 
-        f1 = metrics["f1"] if not np.isnan(metrics["f1"]) else 0.0
+        f1 = metrics["f1"]
+        if np.isnan(f1):
+            print(f"  [!] Warning: NaN F1 for {label}. Replacing with 0.0")
+            f1 = 0.0
         auc = metrics["auc_roc"] if not np.isnan(metrics["auc_roc"]) else float("nan")
         print(f"  Test F1: {f1:.4f}  AUC: {auc:.4f}\n")
 
@@ -412,8 +421,12 @@ Examples:
     if not args.skip_pipeline:
         run_full_pipeline(esm_model, force_redownload=args.redownload)
     else:
-        if not os.path.exists(os.path.join(DATASET_DIR, "train.pt")):
-            print("[-] --skip-pipeline specified but no .pt files found. Running pipeline anyway.")
+        missing = []
+        for fname in ("train.pt", "val.pt", "test.pt"):
+            if not os.path.exists(os.path.join(DATASET_DIR, fname)):
+                missing.append(fname)
+        if missing:
+            print(f"[-] --skip-pipeline specified but missing: {', '.join(missing)}. Running pipeline.")
             run_full_pipeline(esm_model, force_redownload=args.redownload)
         else:
             print("[~] Skipping pipeline, using existing dataset")

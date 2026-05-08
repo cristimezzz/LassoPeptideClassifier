@@ -171,7 +171,7 @@ def fetch_lassopred_to_fasta(output_fasta):
     }
 
     try:
-        response = requests.get(api_url, headers=headers)
+        response = requests.get(api_url, headers=headers, timeout=30)
         response.raise_for_status()
         data_list = response.json()["data"]
 
@@ -190,7 +190,7 @@ def fetch_lassopred_to_fasta(output_fasta):
     except requests.exceptions.RequestException as e:
         print(f"[-] Network error: {e}")
         raise
-    except Exception as e:
+    except (KeyError, TypeError, IndexError) as e:
         print(f"[-] Parse error: {e}")
         raise
 
@@ -230,7 +230,8 @@ def fetch_uniprot_negatives(output_fasta, limit=UNIPROT_NEG_LIMIT):
     }
 
     try:
-        response = requests.get(url, params=params, headers=headers, stream=True)
+        response = requests.get(url, params=params, headers=headers, stream=True,
+                               timeout=(30, 60))
         response.raise_for_status()
 
         count = 0
@@ -352,19 +353,24 @@ def create_and_split_dataset(pos_fasta, neg_fasta, output_dir=DATASET_DIR, esm_m
         tmp_neg = f_neg.name
 
     # Extract frozen ESM-2 embeddings
-    pos_ids, pos_features = extract_esm2_embeddings(
-        tmp_pos, esm_model_name, esm_model, tokenizer, device, batch_size, MAX_LEN
-    )
-    pos_labels = torch.ones(pos_features.size(0), dtype=torch.float32)
+    try:
+        pos_ids, pos_features = extract_esm2_embeddings(
+            tmp_pos, esm_model_name, esm_model, tokenizer, device, batch_size, MAX_LEN
+        )
+        pos_labels = torch.ones(pos_features.size(0), dtype=torch.float32)
 
-    neg_ids, neg_features = extract_esm2_embeddings(
-        tmp_neg, esm_model_name, esm_model, tokenizer, device, batch_size, MAX_LEN
-    )
-    neg_labels = torch.zeros(neg_features.size(0), dtype=torch.float32)
+        neg_ids, neg_features = extract_esm2_embeddings(
+            tmp_neg, esm_model_name, esm_model, tokenizer, device, batch_size, MAX_LEN
+        )
+        neg_labels = torch.zeros(neg_features.size(0), dtype=torch.float32)
+    finally:
+        # Clean up temp files even on exception
+        os.remove(tmp_pos)
+        os.remove(tmp_neg)
 
-    # Clean up temp files
-    os.remove(tmp_pos)
-    os.remove(tmp_neg)
+    del esm_model
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
     # Concatenate all data
     X = torch.cat([pos_features, neg_features], dim=0)

@@ -100,7 +100,13 @@ def get_esm_embed_dim(model_name=None):
     """
     from transformers import EsmConfig
     name = model_name or ESM_MODEL_NAME
-    return EsmConfig.from_pretrained(name).hidden_size
+    try:
+        return EsmConfig.from_pretrained(name).hidden_size
+    except (OSError, EnvironmentError) as e:
+        raise RuntimeError(
+            f"Failed to load ESM config for '{name}'. "
+            f"First use requires network access. Original error: {e}"
+        ) from e
 
 
 def get_model_info(model_name=None):

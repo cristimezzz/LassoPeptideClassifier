@@ -27,7 +27,8 @@ from config import (
 from utils import load_esm_model, extract_esm2_embeddings, load_classifier_from_checkpoint
 
 
-def predict_fasta(input_fasta, output_csv, checkpoint=None, esm_model_name=None):
+def predict_fasta(input_fasta, output_csv, checkpoint=None, esm_model_name=None,
+                  device=None):
     """Predict lasso peptide probabilities for all sequences in a FASTA file.
 
     Pipeline:
@@ -54,6 +55,8 @@ def predict_fasta(input_fasta, output_csv, checkpoint=None, esm_model_name=None)
 
     # Parse and validate input
     print(f"[*] Reading sequences from {input_fasta}")
+    if not os.path.exists(input_fasta):
+        raise FileNotFoundError(f"Input FASTA file not found: {input_fasta}")
     records = list(SeqIO.parse(input_fasta, "fasta"))
     if not records:
         print("[-] No sequences found in input file")
@@ -66,6 +69,10 @@ def predict_fasta(input_fasta, output_csv, checkpoint=None, esm_model_name=None)
     seq_ids, embeddings = extract_esm2_embeddings(
         input_fasta, esm_model_name, esm_model, tokenizer, device, batch_size, MAX_LEN
     )
+
+    del esm_model
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
     # Load trained classifier
     ckpt_path = checkpoint or os.path.join(CHECKPOINT_DIR, "best_model.pt")
@@ -88,6 +95,7 @@ def predict_fasta(input_fasta, output_csv, checkpoint=None, esm_model_name=None)
         "probability": probabilities,
         "prediction": ["positive" if p >= 0.5 else "negative" for p in probabilities],
     })
+    os.makedirs(os.path.dirname(os.path.abspath(output_csv)), exist_ok=True)
     results.to_csv(output_csv, index=False)
     print(f"[+] Results saved to {output_csv}")
     print(results.head())
